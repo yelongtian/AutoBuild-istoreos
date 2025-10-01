@@ -1,0 +1,307 @@
+name: 构建视美太rk3399IoT-3399E iStoreOS固件
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: '构建类型'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - debug
+          - custom
+      clean_build:
+        description: '清理构建'
+        required: true
+        default: 'true'
+        type: boolean
+      upload_artifact:
+        description: '上传产物'
+        required: true
+        default: 'true'
+        type: boolean
+
+  schedule:
+    - cron: '0 0 * * 0'  # 每周日自动构建
+
+jobs:
+  build:
+    name: 编译iStoreOS固件
+    runs-on: ubuntu-22.04
+    if: github.event.repository.owner.id == github.event.sender.id
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [ 'rk3399' ]
+        subtarget: [ 'armv8' ]
+
+    steps:
+      - name: 检查磁盘空间
+        run: |
+          df -h
+          echo "当前磁盘使用情况："
+          du -sh /home/runner/* || true
+
+      - name: 清理工作空间
+        if: inputs.clean_build == 'true'
+        run: |
+          sudo rm -rf /home/runner/work/* || true
+          sudo apt clean
+          docker system prune -af || true
+          echo "工作空间清理完成"
+
+      - name: 检查系统环境
+        run: |
+          uname -a
+          lsb_release -a
+          free -h
+          df -h
+          echo "CPU核心数：$(nproc)"
+
+      - name: 安装依赖包
+        run: |
+          sudo apt update -y
+          sudo apt full-upgrade -y
+          sudo apt install -y \
+            ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext \
+            gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 \
+            libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev \
+            libncurses5-dev libncursesw5-dev libreadline-dev libssl-dev libtool lrzsz \
+            mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python2.7 \
+            python3 python3-pip libpython3-dev qemu-utils rsync scons squashfs-tools \
+            subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+
+      - name: 配置CCache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ runner.os }}-${{ matrix.target }}-${{ matrix.subtarget }}-ccache
+          max-size: 10G
+
+      - name: 克隆iStoreOS源码
+        run: |
+          git clone https://github.com/istoreos/istoreos.git --depth=1
+          cd istoreos
+          echo "iStoreOS源码版本：$(git rev-parse --short HEAD)"
+          echo "源码目录大小：$(du -sh .)"
+
+      - name: 更新Feeds
+        run: |
+          cd istoreos
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          echo "Feeds更新完成"
+
+      - name: 加载默认配置
+        run: |
+          cd istoreos
+          # 为rk3399设置默认配置
+          echo "CONFIG_TARGET_rockchip=y" > .config
+          echo "CONFIG_TARGET_rockchip_armv8=y" >> .config
+          echo "CONFIG_TARGET_MULTI_PROFILE=y" >> .config
+          echo "CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_firefly-rk3399=y" >> .config
+          
+          # 基本系统配置
+          echo "CONFIG_BUSYBOX_CUSTOM=y" >> .config
+          echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y" >> .config
+          echo "CONFIG_TARGET_ROOTFS_TARGZ=y" >> .config
+          echo "CONFIG_TARGET_SQUASHFS_BLOCK_SIZE=256" >> .config
+          
+          # 网络配置
+          echo "CONFIG_PACKAGE_dnsmasq-full=y" >> .config
+          echo "CONFIG_PACKAGE_ip6tables=y" >> .config
+          echo "CONFIG_PACKAGE_iptables-mod-extra=y" >> .config
+          echo "CONFIG_PACKAGE_iptables-mod-ipopt=y" >> .config
+          echo "CONFIG_PACKAGE_wireless-tools=y" >> .config
+          echo "CONFIG_PACKAGE_wpa_supplicant=y" >> .config
+          
+          # LuCI界面
+          echo "CONFIG_PACKAGE_luci=y" >> .config
+          echo "CONFIG_PACKAGE_luci-theme-argon=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-istore=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-firewall=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-opkg=y" >> .config
+          
+          # 存储支持
+          echo "CONFIG_PACKAGE_block-mount=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-fs-ext4=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-fs-ntfs=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-fs-vfat=y" >> .config
+          
+          # USB支持
+          echo "CONFIG_PACKAGE_kmod-usb-ohci=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-usb-uhci=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-usb2=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-usb3=y" >> .config
+          
+          # 网络工具
+          echo "CONFIG_PACKAGE_iputils-ping=y" >> .config
+          echo "CONFIG_PACKAGE_traceroute=y" >> .config
+          echo "CONFIG_PACKAGE_nslookup=y" >> .config
+          echo "CONFIG_PACKAGE_netcat=y" >> .config
+          
+          echo "默认配置加载完成"
+
+      - name: 自定义配置
+        run: |
+          cd istoreos
+          
+          # 视美太rk3399IoT-3399E特定配置
+          echo "CONFIG_TARGET_BOARD='rockchip'" >> .config
+          echo "CONFIG_TARGET_SUBTARGET='armv8'" >> .config
+          echo "CONFIG_TARGET_PROFILE='DEVICE_firefly-rk3399'" >> .config
+          
+          # 启用额外功能
+          echo "CONFIG_PACKAGE_luci-app-ddns=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-upnp=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-vlmcsd=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-adbyby-plus=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-samba4=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-vsftpd=y" >> .config
+          
+          # 优化性能
+          echo "CONFIG_CPU_FREQ=y" >> .config
+          echo "CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND=y" >> .config
+          echo "CONFIG_KERNEL_CGROUP_CPUACCT=y" >> .config
+          echo "CONFIG_KERNEL_CGROUP_MEMCG=y" >> .config
+          
+          echo "自定义配置完成"
+
+      - name: 生成配置
+        run: |
+          cd istoreos
+          make defconfig
+          echo "配置生成完成"
+          cat .config | grep -E "(TARGET_|PACKAGE_|CONFIG_)" | head -50
+          echo "..."
+          echo "配置文件大小：$(wc -l .config) 行"
+
+      - name: 下载源码
+        run: |
+          cd istoreos
+          make download -j$(nproc) || make download -j1 V=s
+          echo "源码下载完成"
+
+      - name: 编译固件
+        run: |
+          cd istoreos
+          echo "开始编译，使用 $(nproc) 个核心"
+          make -j$(nproc) || make -j1 V=s
+          echo "编译完成"
+
+      - name: 检查编译结果
+        run: |
+          cd istoreos
+          echo "编译产物列表："
+          find bin/targets/${{ matrix.target }}/${{ matrix.subtarget }} -type f -name "*.img*" -o -name "*.bin*" -o -name "*.gz*" | head -20
+          echo "产物目录大小："
+          du -sh bin/targets/${{ matrix.target }}/${{ matrix.subtarget }}/* || true
+
+      - name: 生成固件信息
+        run: |
+          cd istoreos
+          # 创建固件信息文件
+          cat > firmware_info.txt << EOF
+          iStoreOS固件构建信息
+          ======================
+          构建时间: $(date '+%Y-%m-%d %H:%M:%S')
+          构建类型: ${{ inputs.build_type }}
+          源码版本: $(git rev-parse --short HEAD)
+          目标平台: ${{ matrix.target }}/${{ matrix.subtarget }}
+          构建系统: $(uname -a)
+          编译器: $(gcc --version | head -1)
+          固件文件:
+          $(find bin/targets/${{ matrix.target }}/${{ matrix.subtarget }} -type f -name "*.img*" -o -name "*.bin*" | awk '{print "  " $0}')
+          
+          默认配置:
+          - 管理IP: 192.168.100.1
+          - 用户名: root
+          - 密码: password
+          - WiFi名称: iStoreOS-xxxx
+          - WiFi密码: 无默认密码
+          
+          包含功能:
+          - 基础路由功能
+          - LuCI Web界面
+          - iStore应用商店
+          - Samba文件共享
+          - FTP服务器
+          - DDNS动态域名
+          - UPnP自动端口映射
+          - 广告过滤
+          - 时间同步服务
+          EOF
+          
+          echo "固件信息文件生成完成"
+          cat firmware_info.txt
+
+      - name: 打包固件
+        run: |
+          cd istoreos
+          # 创建压缩包
+          FIRMWARE_DIR="bin/targets/${{ matrix.target }}/${{ matrix.subtarget }}"
+          PACKAGE_NAME="istoreos-${{ matrix.target }}-${{ matrix.subtarget }}-$(date +%Y%m%d)-$(git rev-parse --short HEAD)"
+          
+          # 复制固件文件
+          mkdir -p $PACKAGE_NAME
+          cp -r $FIRMWARE_DIR/*.img* $PACKAGE_NAME/ 2>/dev/null || true
+          cp -r $FIRMWARE_DIR/*.bin* $PACKAGE_NAME/ 2>/dev/null || true
+          cp firmware_info.txt $PACKAGE_NAME/
+          
+          # 创建压缩包
+          zip -r ${PACKAGE_NAME}.zip $PACKAGE_NAME/
+          tar -czf ${PACKAGE_NAME}.tar.gz $PACKAGE_NAME/
+          
+          echo "固件打包完成："
+          ls -la ${PACKAGE_NAME}.*
+          
+          # 保存文件名用于后续步骤
+          echo "FIRMWARE_ZIP=${PACKAGE_NAME}.zip" >> $GITHUB_ENV
+          echo "FIRMWARE_TAR=${PACKAGE_NAME}.tar.gz" >> $GITHUB_ENV
+          echo "FIRMWARE_DIR=$PACKAGE_NAME" >> $GITHUB_ENV
+
+      - name: 上传构建产物
+        if: inputs.upload_artifact == 'true'
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ env.FIRMWARE_DIR }}
+          path: |
+            istoreos/${{ env.FIRMWARE_ZIP }}
+            istoreos/${{ env.FIRMWARE_TAR }}
+            istoreos/firmware_info.txt
+          retention-days: 30
+
+      - name: 创建GitHub Release
+        if: inputs.build_type == 'release' && inputs.upload_artifact == 'true'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ github.run_number }}-$(date +%Y%m%d)
+          name: iStoreOS构建 ${{ github.run_number }}
+          body_path: istoreos/firmware_info.txt
+          files: |
+            istoreos/${{ env.FIRMWARE_ZIP }}
+            istoreos/${{ env.FIRMWARE_TAR }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 清理临时文件
+        if: always()
+        run: |
+          cd istoreos
+          make clean || true
+          echo "临时文件清理完成"
+
+      - name: 构建总结
+        run: |
+          echo "构建总结："
+          echo "=================="
+          echo "构建状态：${{ job.status }}"
+          echo "构建时间：$(date '+%Y-%m-%d %H:%M:%S')"
+          echo "产物文件："
+          ls -la istoreos/${{ env.FIRMWARE_DIR }}.* 2>/dev/null || echo "无产物文件"
+          echo "=================="
