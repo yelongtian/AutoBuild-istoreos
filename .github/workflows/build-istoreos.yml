@@ -1,4 +1,4 @@
-name: 构建视美太rk3399IoT-3399E iStoreOS固件
+name: 构建视美太IoT-3399E iStoreOS固件
 
 on:
   workflow_dispatch:
