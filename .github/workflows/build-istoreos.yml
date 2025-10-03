@@ -265,7 +265,7 @@ jobs:
 
       - name: 上传构建产物
         if: inputs.upload_artifact == 'true'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ env.FIRMWARE_DIR }}
           path: |
